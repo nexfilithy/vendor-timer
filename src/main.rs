@@ -198,6 +198,22 @@ impl VendorApp {
     fn effective_reset_minutes(default_reset_minutes: i64, v: &Vendor) -> i64 {
         v.reset_period_minutes.unwrap_or(default_reset_minutes).max(1)
     }
+
+    fn remaining_minutes_clamped(reset_at: Option<OffsetDateTime>) -> Option<i64> {
+        let reset_at = reset_at?;
+        let now = OffsetDateTime::now_utc();
+        let d = reset_at - now;
+        let mins = d.whole_minutes();
+        Some(mins.max(0))
+    }
+
+    fn fmt_d_h_m_from_minutes(total_minutes: i64) -> String {
+        let total_minutes = total_minutes.max(0);
+        let days = total_minutes / (60 * 24);
+        let hours = (total_minutes % (60 * 24)) / 60;
+        let mins = total_minutes % 60;
+        format!("{days}d {hours:02}h {mins:02}m")
+    }
 }
 
 impl App for VendorApp {
@@ -245,19 +261,7 @@ impl App for VendorApp {
                 });
             });
 
-            ui.add_space(4.0);
-
-            // Legend (top). You can move to bottom by swapping panels.
-            egui::CollapsingHeader::new("Relationship legend")
-                .default_open(false)
-                .show(ui, |ui| {
-                    for (i, name) in RELATIONSHIP.iter().enumerate() {
-                        ui.label(format!("{} = {}", i + 1, name));
-                    }
-                });
-
-            ui.add_space(4.0);
-
+            ui.separator();
             ui.horizontal(|ui| {
                 if ui.button("Save").clicked() {
                     self.dirty = true;
@@ -272,6 +276,70 @@ impl App for VendorApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(self.path.display().to_string());
                 });
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+
+            egui::CollapsingHeader::new("Compact overview")
+                .default_open(true)
+                .show(ui, |ui| {
+                    // Build a temporary list for display + sorting without borrowing vendors mutably.
+                    let mut rows: Vec<(String, Option<i64>)> = self
+                        .persisted
+                        .vendors
+                        .iter()
+                        .map(|v| (v.name.clone(), VendorApp::remaining_minutes_clamped(v.reset_at)))
+                        .collect();
+
+                    // Sort: ready (0) first, then soonest, then "—" (None) last, then by name.
+                    rows.sort_by(|a, b| match (a.1, b.1) {
+                        (Some(ma), Some(mb)) => ma.cmp(&mb).then_with(|| a.0.cmp(&b.0)),
+                        (Some(_), None) => std::cmp::Ordering::Less,
+                        (None, Some(_)) => std::cmp::Ordering::Greater,
+                        (None, None) => a.0.cmp(&b.0),
+                    });
+
+                    // A very compact table-like list
+                    egui::Grid::new("compact_overview_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 2.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.strong("Vendor");
+                            ui.strong("Remaining");
+                            ui.end_row();
+
+                            for (name, mins_opt) in rows {
+                                ui.label(name);
+
+                                match mins_opt {
+                                    None => {
+                                        ui.label("—");
+                                    }
+                                    Some(0) => {
+                                        ui.colored_label(egui::Color32::LIGHT_RED, "0d 00h 00m");
+                                    }
+                                    Some(m) => {
+                                        ui.monospace(VendorApp::fmt_d_h_m_from_minutes(m));
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        });
+                });
+
+            ui.separator();
+            // Legend (top). You can move to bottom by swapping panels.
+            egui::CollapsingHeader::new("Relationship legend")
+                .default_open(false)
+                .show(ui, |ui| {
+                    for (i, name) in RELATIONSHIP.iter().enumerate() {
+                        ui.label(format!("{} = {}", i + 1, name));
+                    }
+                });
+
+            //ui.add_space(4.0);
+
             });
         });
 
