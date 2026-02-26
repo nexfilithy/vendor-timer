@@ -9,7 +9,7 @@ fn main() -> eframe::Result<()> {
     native.viewport = native
         .viewport
         .with_always_on_top()
-        .with_inner_size([440.0, 680.0]);
+        .with_inner_size([660.0, 860.0]);
 
     eframe::run_native(
         "Vendor Timers",
@@ -86,6 +86,11 @@ struct VendorApp {
     draft_name: String,
     draft_money: i64,
 
+    // Top calculator (UI only)
+    calc_days: i64,
+    calc_hours: i64,
+    calc_minutes: i64,
+
     dirty: bool,
 }
 
@@ -112,6 +117,9 @@ impl VendorApp {
             path,
             draft_name: String::new(),
             draft_money: 0,
+            calc_days: 0,
+            calc_hours: 0,
+            calc_minutes: 0,
             dirty: false,
         }
     }
@@ -212,7 +220,29 @@ impl App for VendorApp {
                     self.dirty = true;
                 }
                 ui.separator();
-                ui.label("Favor: 1..11");
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Minutes calc:");
+
+                    ui.label("d");
+                    ui.add(egui::DragValue::new(&mut self.calc_days).clamp_range(0..=365).speed(1));
+
+                    ui.label("h");
+                    ui.add(egui::DragValue::new(&mut self.calc_hours).clamp_range(0..=23).speed(1));
+
+                    ui.label("m");
+                    ui.add(egui::DragValue::new(&mut self.calc_minutes).clamp_range(0..=59).speed(1));
+
+                    let total = self.calc_days * 24 * 60 + self.calc_hours * 60 + self.calc_minutes;
+
+                    ui.separator();
+                    ui.monospace(format!("= {total} minutes"));
+
+                    if ui.button("Set default").clicked() {
+                        self.persisted.default_reset_minutes = total.max(1);
+                        self.dirty = true;
+                    }
+                });
             });
 
             ui.add_space(4.0);
