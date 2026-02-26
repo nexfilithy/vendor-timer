@@ -47,6 +47,7 @@ struct Vendor {
     /// UTC timestamp when the reset *would* occur.
     /// Display clamps at 0 when passed, and stays there until user presses "Reset".
     reset_at: Option<OffsetDateTime>,
+    reset_period_minutes: Option<i64>,
 
     // UI-only drafts (not persisted)
     #[serde(skip)]
@@ -64,6 +65,7 @@ impl Default for Vendor {
             likes: vec![],
             favor_level: 5, // Neutral
             reset_at: None,
+            reset_period_minutes: None,
             draft_buy: String::new(),
             draft_like: String::new(),
         }
@@ -72,6 +74,7 @@ impl Default for Vendor {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Persisted {
+    default_reset_minutes: i64,
     vendors: Vec<Vendor>,
 }
 
@@ -89,8 +92,12 @@ struct VendorApp {
 impl VendorApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let path = default_save_path();
-        let mut persisted = load(&path).unwrap_or(Persisted { vendors: vec![] });
-
+        let mut persisted = load(&path).unwrap_or(Persisted {
+            default_reset_minutes: 7*24*60,
+            vendors: vec![] });
+        if persisted.default_reset_minutes <= 0 {
+            persisted.default_reset_minutes = 7 * 24 * 60;
+        }
         // init UI-only fields for loaded vendors
         for v in &mut persisted.vendors {
             v.draft_buy = String::new();
@@ -179,6 +186,10 @@ impl VendorApp {
                 *dirty = true;
             }
         }
+
+    fn effective_reset_minutes(default_reset_minutes: i64, v: &Vendor) -> i64 {
+        v.reset_period_minutes.unwrap_or(default_reset_minutes).max(1)
+    }
 }
 
 impl App for VendorApp {
@@ -189,7 +200,17 @@ impl App for VendorApp {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Vendors");
                 ui.separator();
-                ui.label("Reset period: 7 days");
+                ui.label("Default reset (min):");
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut self.persisted.default_reset_minutes)
+                            .clamp_range(1..=30 * 24 * 60)
+                            .speed(10),
+                    )
+                    .changed()
+                {
+                    self.dirty = true;
+                }
                 ui.separator();
                 ui.label("Favor: 1..11");
             });
@@ -266,6 +287,7 @@ impl App for VendorApp {
             let mut remove_idx: Option<usize> = None;
 
             egui::ScrollArea::vertical().show(ui, |ui| {
+            let default_reset_minutes= self.persisted.default_reset_minutes;
                 for (i, v) in self.persisted.vendors.iter_mut().enumerate() {
                     egui::Frame::group(ui.style())
                         .fill(ui.visuals().extreme_bg_color)
@@ -321,19 +343,46 @@ impl App for VendorApp {
                                 } else {
                                     ui.label("—");
                                 }
+                                ui.separator();
+                                ui.label("Reset override (min):");
+
+                                let mut override_enabled = v.reset_period_minutes.is_some();
+                                if ui.checkbox(&mut override_enabled, "Use override").changed() {
+                                    if override_enabled {
+                                        v.reset_period_minutes = Some(self.persisted.default_reset_minutes.max(1));
+                                    } else {
+                                        v.reset_period_minutes = None;
+                                    }
+                                    self.dirty = true;
+                                }
+
+                                if let Some(m) = v.reset_period_minutes.as_mut() {
+                                    if ui
+                                        .add(
+                                            egui::DragValue::new(m)
+                                                .clamp_range(1..=30 * 24 * 60)
+                                                .speed(10),
+                                        )
+                                        .changed()
+                                    {
+                                        self.dirty = true;
+                                    }
+                                }
 
                                 ui.separator();
 
                                 // Start sets the reset timestamp to now+7d (fixed)
                                 if ui.button("Start").clicked() {
-                                    v.reset_at = Some(OffsetDateTime::now_utc() + RESET_PERIOD);
+                                    let mins = VendorApp::effective_reset_minutes(default_reset_minutes, v);
+                                    v.reset_at = Some(OffsetDateTime::now_utc() + Duration::minutes(mins));
                                     self.dirty = true;
                                 }
 
                                 // Reset: sets a new 7-day window starting now (and you can press it
                                 // after it hits 0 to “consume” the reset).
                                 if ui.button("Reset").clicked() {
-                                    v.reset_at = Some(OffsetDateTime::now_utc() + RESET_PERIOD);
+                                    let mins = VendorApp::effective_reset_minutes(default_reset_minutes, v);
+                                    v.reset_at = Some(OffsetDateTime::now_utc() + Duration::minutes(mins));
                                     self.dirty = true;
                                 }
 
