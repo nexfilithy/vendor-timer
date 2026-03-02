@@ -6,19 +6,38 @@ use time::{Duration, OffsetDateTime};
 
 fn main() -> eframe::Result<()> {
     let mut native = NativeOptions::default();
-    native.viewport = native
-        .viewport
-        .with_always_on_top()
-        .with_inner_size([660.0, 860.0]);
+    native.viewport = native.viewport.with_always_on_top();
+
+    // ADD THIS (choose any stable dir):
+    native.persistence_path = Some(persistence_path());
 
     eframe::run_native(
         "Vendor Timers",
         native,
-        Box::new(|cc| Ok(Box::new(VendorApp::new(cc)))),
+        Box::new(|cc| {
+            let mut app = VendorApp::new(cc);
+
+            if let Some(storage) = cc.storage {
+                if let Some(persisted) = eframe::get_value::<Persisted>(storage, eframe::APP_KEY) {
+                    app.persisted = persisted;
+
+                    // re-init UI-only fields that are #[serde(skip)]
+                    for v in &mut app.persisted.vendors {
+                        v.draft_buy = String::new();
+                        v.draft_like = String::new();
+                    }
+                }
+            }
+
+            Ok(Box::new(app))
+        }),
     )
 }
 
-const RESET_PERIOD: Duration = Duration::days(7);
+fn persistence_path() -> PathBuf {
+    let base = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
+    base.join("vendor_timers").join("eframe_state.ron")
+}
 
 const RELATIONSHIP: [&str; 11] = [
     "Despised",
@@ -104,6 +123,7 @@ impl VendorApp {
         if persisted.default_reset_minutes <= 0 {
             persisted.default_reset_minutes = 7 * 24 * 60;
         }
+
         // init UI-only fields for loaded vendors
         for v in &mut persisted.vendors {
             v.draft_buy = String::new();
@@ -619,6 +639,10 @@ impl App for VendorApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.dirty = true;
         self.save_if_dirty();
+    }
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // Save your own state too (optional); but for window size, eframe handles viewport.
+        eframe::set_value(storage, eframe::APP_KEY, &self.persisted);
     }
 }
 
