@@ -1,5 +1,5 @@
 // src/main.rs
-use eframe::{egui, App, Frame, NativeOptions};
+use eframe::{App, Frame, NativeOptions, egui};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 use time::{Duration, OffsetDateTime};
@@ -98,8 +98,9 @@ impl VendorApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let path = default_save_path();
         let mut persisted = load(&path).unwrap_or(Persisted {
-            default_reset_minutes: 7*24*60,
-            vendors: vec![] });
+            default_reset_minutes: 7 * 24 * 60,
+            vendors: vec![],
+        });
         if persisted.default_reset_minutes <= 0 {
             persisted.default_reset_minutes = 7 * 24 * 60;
         }
@@ -173,30 +174,32 @@ impl VendorApp {
     }
 
     fn chip_list(ui: &mut egui::Ui, items: &mut Vec<String>, dirty: &mut bool) {
-            // Wrapped row of "chips" with remove buttons.
-            let mut remove: Option<usize> = None;
+        // Wrapped row of "chips" with remove buttons.
+        let mut remove: Option<usize> = None;
 
-            ui.horizontal_wrapped(|ui| {
-                for (idx, item) in items.iter().enumerate() {
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(item);
-                            if ui.small_button("x").clicked() {
-                                remove = Some(idx);
-                            }
-                        });
+        ui.horizontal_wrapped(|ui| {
+            for (idx, item) in items.iter().enumerate() {
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(item);
+                        if ui.small_button("x").clicked() {
+                            remove = Some(idx);
+                        }
                     });
-                }
-            });
-
-            if let Some(idx) = remove {
-                items.remove(idx);
-                *dirty = true;
+                });
             }
+        });
+
+        if let Some(idx) = remove {
+            items.remove(idx);
+            *dirty = true;
         }
+    }
 
     fn effective_reset_minutes(default_reset_minutes: i64, v: &Vendor) -> i64 {
-        v.reset_period_minutes.unwrap_or(default_reset_minutes).max(1)
+        v.reset_period_minutes
+            .unwrap_or(default_reset_minutes)
+            .max(1)
     }
 
     fn remaining_minutes_clamped(reset_at: Option<OffsetDateTime>) -> Option<i64> {
@@ -241,13 +244,25 @@ impl App for VendorApp {
                     ui.label("Minutes calc:");
 
                     ui.label("d");
-                    ui.add(egui::DragValue::new(&mut self.calc_days).clamp_range(0..=365).speed(1));
+                    ui.add(
+                        egui::DragValue::new(&mut self.calc_days)
+                            .clamp_range(0..=365)
+                            .speed(1),
+                    );
 
                     ui.label("h");
-                    ui.add(egui::DragValue::new(&mut self.calc_hours).clamp_range(0..=23).speed(1));
+                    ui.add(
+                        egui::DragValue::new(&mut self.calc_hours)
+                            .clamp_range(0..=23)
+                            .speed(1),
+                    );
 
                     ui.label("m");
-                    ui.add(egui::DragValue::new(&mut self.calc_minutes).clamp_range(0..=59).speed(1));
+                    ui.add(
+                        egui::DragValue::new(&mut self.calc_minutes)
+                            .clamp_range(0..=59)
+                            .speed(1),
+                    );
 
                     let total = self.calc_days * 24 * 60 + self.calc_hours * 60 + self.calc_minutes;
 
@@ -279,67 +294,75 @@ impl App for VendorApp {
             });
             ui.add_space(4.0);
             ui.horizontal(|ui| {
+                egui::CollapsingHeader::new("Compact overview")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        // Build a temporary list for display + sorting without borrowing vendors mutably.
+                        let mut rows: Vec<(String, i64, Option<i64>)> = self
+                            .persisted
+                            .vendors
+                            .iter()
+                            .map(|v| {
+                                (
+                                    v.name.clone(),
+                                    v.money,
+                                    VendorApp::remaining_minutes_clamped(v.reset_at),
+                                )
+                            })
+                            .collect();
 
-            egui::CollapsingHeader::new("Compact overview")
-                .default_open(true)
-                .show(ui, |ui| {
-                    // Build a temporary list for display + sorting without borrowing vendors mutably.
-                    let mut rows: Vec<(String, Option<i64>)> = self
-                        .persisted
-                        .vendors
-                        .iter()
-                        .map(|v| (v.name.clone(), VendorApp::remaining_minutes_clamped(v.reset_at)))
-                        .collect();
+                        // Sort: ready (0) first, then soonest, then "—" (None) last, then by name.
+                        rows.sort_by(|a, b| match (a.2, b.2) {
+                            (Some(ma), Some(mb)) => ma.cmp(&mb).then_with(|| a.0.cmp(&b.0)),
+                            (Some(_), None) => std::cmp::Ordering::Less,
+                            (None, Some(_)) => std::cmp::Ordering::Greater,
+                            (None, None) => a.0.cmp(&b.0),
+                        });
 
-                    // Sort: ready (0) first, then soonest, then "—" (None) last, then by name.
-                    rows.sort_by(|a, b| match (a.1, b.1) {
-                        (Some(ma), Some(mb)) => ma.cmp(&mb).then_with(|| a.0.cmp(&b.0)),
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => a.0.cmp(&b.0),
+                        // A very compact table-like list
+                        egui::Grid::new("compact_overview_grid")
+                            .num_columns(3)
+                            .spacing([12.0, 2.0])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                ui.strong("Vendor");
+                                ui.strong("Money");
+                                ui.strong("Remaining");
+                                ui.end_row();
+
+                                for (name, money, mins_opt) in rows {
+                                    ui.label(name);
+                                    ui.label(money.to_string());
+                                    match mins_opt {
+                                        None => {
+                                            ui.label("—");
+                                        }
+                                        Some(0) => {
+                                            ui.colored_label(
+                                                egui::Color32::LIGHT_RED,
+                                                "0d 00h 00m",
+                                            );
+                                        }
+                                        Some(m) => {
+                                            ui.monospace(VendorApp::fmt_d_h_m_from_minutes(m));
+                                        }
+                                    }
+                                    ui.end_row();
+                                }
+                            });
                     });
 
-                    // A very compact table-like list
-                    egui::Grid::new("compact_overview_grid")
-                        .num_columns(2)
-                        .spacing([12.0, 2.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            ui.strong("Vendor");
-                            ui.strong("Remaining");
-                            ui.end_row();
+                ui.separator();
+                // Legend (top). You can move to bottom by swapping panels.
+                egui::CollapsingHeader::new("Relationship legend")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        for (i, name) in RELATIONSHIP.iter().enumerate() {
+                            ui.label(format!("{} = {}", i + 1, name));
+                        }
+                    });
 
-                            for (name, mins_opt) in rows {
-                                ui.label(name);
-
-                                match mins_opt {
-                                    None => {
-                                        ui.label("—");
-                                    }
-                                    Some(0) => {
-                                        ui.colored_label(egui::Color32::LIGHT_RED, "0d 00h 00m");
-                                    }
-                                    Some(m) => {
-                                        ui.monospace(VendorApp::fmt_d_h_m_from_minutes(m));
-                                    }
-                                }
-                                ui.end_row();
-                            }
-                        });
-                });
-
-            ui.separator();
-            // Legend (top). You can move to bottom by swapping panels.
-            egui::CollapsingHeader::new("Relationship legend")
-                .default_open(false)
-                .show(ui, |ui| {
-                    for (i, name) in RELATIONSHIP.iter().enumerate() {
-                        ui.label(format!("{} = {}", i + 1, name));
-                    }
-                });
-
-            //ui.add_space(4.0);
-
+                //ui.add_space(4.0);
             });
         });
 
@@ -359,7 +382,10 @@ impl App for VendorApp {
 
                     ui.horizontal(|ui| {
                         let add_enabled = !self.draft_name.trim().is_empty();
-                        if ui.add_enabled(add_enabled, egui::Button::new("Add")).clicked() {
+                        if ui
+                            .add_enabled(add_enabled, egui::Button::new("Add"))
+                            .clicked()
+                        {
                             let v = Vendor {
                                 name: self.draft_name.trim().to_string(),
                                 money: self.draft_money,
@@ -385,7 +411,7 @@ impl App for VendorApp {
             let mut remove_idx: Option<usize> = None;
 
             egui::ScrollArea::vertical().show(ui, |ui| {
-            let default_reset_minutes= self.persisted.default_reset_minutes;
+                let default_reset_minutes = self.persisted.default_reset_minutes;
                 for (i, v) in self.persisted.vendors.iter_mut().enumerate() {
                     egui::Frame::group(ui.style())
                         .fill(ui.visuals().extreme_bg_color)
@@ -447,7 +473,8 @@ impl App for VendorApp {
                                 let mut override_enabled = v.reset_period_minutes.is_some();
                                 if ui.checkbox(&mut override_enabled, "Use override").changed() {
                                     if override_enabled {
-                                        v.reset_period_minutes = Some(self.persisted.default_reset_minutes.max(1));
+                                        v.reset_period_minutes =
+                                            Some(self.persisted.default_reset_minutes.max(1));
                                     } else {
                                         v.reset_period_minutes = None;
                                     }
@@ -471,16 +498,24 @@ impl App for VendorApp {
 
                                 // Start sets the reset timestamp to now+7d (fixed)
                                 if ui.button("Start").clicked() {
-                                    let mins = VendorApp::effective_reset_minutes(default_reset_minutes, v);
-                                    v.reset_at = Some(OffsetDateTime::now_utc() + Duration::minutes(mins));
+                                    let mins = VendorApp::effective_reset_minutes(
+                                        default_reset_minutes,
+                                        v,
+                                    );
+                                    v.reset_at =
+                                        Some(OffsetDateTime::now_utc() + Duration::minutes(mins));
                                     self.dirty = true;
                                 }
 
                                 // Reset: sets a new 7-day window starting now (and you can press it
                                 // after it hits 0 to “consume” the reset).
                                 if ui.button("Reset").clicked() {
-                                    let mins = VendorApp::effective_reset_minutes(default_reset_minutes, v);
-                                    v.reset_at = Some(OffsetDateTime::now_utc() + Duration::minutes(mins));
+                                    let mins = VendorApp::effective_reset_minutes(
+                                        default_reset_minutes,
+                                        v,
+                                    );
+                                    v.reset_at =
+                                        Some(OffsetDateTime::now_utc() + Duration::minutes(mins));
                                     self.dirty = true;
                                 }
 
@@ -500,8 +535,7 @@ impl App for VendorApp {
 
                                 let old = v.favor_level;
                                 ui.add(
-                                    egui::Slider::new(&mut v.favor_level, 1..=11)
-                                        .show_value(false),
+                                    egui::Slider::new(&mut v.favor_level, 1..=11).show_value(false),
                                 );
                                 if v.favor_level != old {
                                     self.dirty = true;
