@@ -25,6 +25,8 @@ fn main() -> eframe::Result<()> {
                     for v in &mut app.persisted.vendors {
                         v.draft_buy = String::new();
                         v.draft_like = String::new();
+                        v.favor_level = v.favor_level.clamp(1, 11);
+                        v.max_money_buf = v.max_money.map(|x| x.to_string()).unwrap_or_default();
                     }
                 }
             }
@@ -57,6 +59,8 @@ const RELATIONSHIP: [&str; 11] = [
 struct Vendor {
     name: String,
     money: i64,
+    #[serde(default)]
+    max_money: Option<i64>,
     buys: Vec<String>,
     likes: Vec<String>,
 
@@ -67,12 +71,16 @@ struct Vendor {
     /// Display clamps at 0 when passed, and stays there until user presses "Reset".
     reset_at: Option<OffsetDateTime>,
     reset_period_minutes: Option<i64>,
+    #[serde(default)]
+    ready_refilled: bool,
 
     // UI-only drafts (not persisted)
     #[serde(skip)]
     draft_buy: String,
     #[serde(skip)]
     draft_like: String,
+    #[serde(skip)]
+    max_money_buf: String,
 }
 
 impl Default for Vendor {
@@ -80,13 +88,16 @@ impl Default for Vendor {
         Self {
             name: "New vendor".to_string(),
             money: 0,
+            max_money: None,
             buys: vec!["weapons".into(), "armor".into()],
             likes: vec![],
             favor_level: 5, // Neutral
             reset_at: None,
             reset_period_minutes: None,
+            ready_refilled: false,
             draft_buy: String::new(),
             draft_like: String::new(),
+            max_money_buf: String::new(),
         }
     }
 }
@@ -129,8 +140,8 @@ impl VendorApp {
             v.draft_buy = String::new();
             v.draft_like = String::new();
             v.favor_level = v.favor_level.clamp(1, 11);
+            v.max_money_buf = v.max_money.map(|x| x.to_string()).unwrap_or_default();
         }
-
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
 
         Self {
@@ -346,14 +357,43 @@ impl App for VendorApp {
                             .striped(true)
                             .show(ui, |ui| {
                                 ui.strong("Vendor");
-                                ui.strong("Money");
+                                ui.strong("Current money");
                                 ui.strong("Remaining");
                                 ui.end_row();
 
-                                for (name, money, mins_opt) in rows {
-                                    ui.label(name);
-                                    ui.label(money.to_string());
-                                    match mins_opt {
+                                let mut idxs: Vec<usize> =
+                                    (0..self.persisted.vendors.len()).collect();
+                                idxs.sort_by(|&ia, &ib| {
+                                    let a = &self.persisted.vendors[ia];
+                                    let b = &self.persisted.vendors[ib];
+                                    let ra = VendorApp::remaining_minutes_clamped(a.reset_at);
+                                    let rb = VendorApp::remaining_minutes_clamped(b.reset_at);
+
+                                    match (ra, rb) {
+                                        (Some(ma), Some(mb)) => {
+                                            ma.cmp(&mb).then_with(|| a.name.cmp(&b.name))
+                                        }
+                                        (Some(_), None) => std::cmp::Ordering::Less,
+                                        (None, Some(_)) => std::cmp::Ordering::Greater,
+                                        (None, None) => a.name.cmp(&b.name),
+                                    }
+                                });
+
+                                for i in idxs {
+                                    let v = &mut self.persisted.vendors[i];
+
+                                    ui.label(v.name.clone());
+
+                                    // interactive current money
+                                    if ui
+                                        .add(egui::DragValue::new(&mut v.money).speed(10))
+                                        .changed()
+                                    {
+                                        self.dirty = true;
+                                    }
+
+                                    // remaining
+                                    match VendorApp::remaining_minutes_clamped(v.reset_at) {
                                         None => {
                                             ui.label("—");
                                         }
@@ -367,6 +407,7 @@ impl App for VendorApp {
                                             ui.monospace(VendorApp::fmt_d_h_m_from_minutes(m));
                                         }
                                     }
+
                                     ui.end_row();
                                 }
                             });
@@ -396,8 +437,13 @@ impl App for VendorApp {
                     });
 
                     ui.horizontal(|ui| {
-                        ui.label("Money");
-                        ui.add(egui::DragValue::new(&mut self.draft_money).speed(10));
+                        ui.label("Current money");
+                        if ui
+                            .add(egui::DragValue::new(&mut self.draft_money).speed(10))
+                            .changed()
+                        {
+                            self.dirty = true;
+                        }
                     });
 
                     ui.horizontal(|ui| {
@@ -406,9 +452,11 @@ impl App for VendorApp {
                             .add_enabled(add_enabled, egui::Button::new("Add"))
                             .clicked()
                         {
+                            let money = self.draft_money;
                             let v = Vendor {
                                 name: self.draft_name.trim().to_string(),
-                                money: self.draft_money,
+                                money: money,
+                                max_money: Some(money),
                                 ..Vendor::default()
                             };
                             self.persisted.vendors.push(v);
@@ -433,6 +481,17 @@ impl App for VendorApp {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let default_reset_minutes = self.persisted.default_reset_minutes;
                 for (i, v) in self.persisted.vendors.iter_mut().enumerate() {
+                    // Auto-refill when the timer reaches 0 (do it once)
+                    if let Some(reset_at) = v.reset_at {
+                        let now = OffsetDateTime::now_utc();
+                        if now >= reset_at && !v.ready_refilled {
+                            if let Some(max) = v.max_money {
+                                v.money = max; // refill current money
+                            }
+                            v.ready_refilled = true;
+                            self.dirty = true;
+                        }
+                    }
                     egui::Frame::group(ui.style())
                         .fill(ui.visuals().extreme_bg_color)
                         .show(ui, |ui| {
@@ -458,6 +517,33 @@ impl App for VendorApp {
                                     .changed()
                                 {
                                     self.dirty = true;
+                                }
+                                ui.separator();
+                                ui.label("Max money");
+                                let resp = ui.add(
+                                    egui::TextEdit::singleline(&mut v.max_money_buf)
+                                        .desired_width(70.0)
+                                        .hint_text("blank = ?"),
+                                );
+
+                                // If user edited the field, sync it into Option<i64>
+                                if resp.changed() {
+                                    let s = v.max_money_buf.trim();
+
+                                    if s.is_empty() {
+                                        v.max_money = None;
+                                        self.dirty = true;
+                                    } else if let Ok(val) = s.parse::<i64>() {
+                                        v.max_money = Some(val);
+                                        self.dirty = true;
+                                    } else {
+                                        // invalid input: do nothing (keeps last valid max_money)
+                                        // (Optional: show red warning)
+                                    }
+                                }
+                                let s = v.max_money_buf.trim();
+                                if !s.is_empty() && s.parse::<i64>().is_err() {
+                                    ui.colored_label(egui::Color32::LIGHT_RED, "number pls");
                                 }
 
                                 ui.with_layout(
@@ -524,6 +610,7 @@ impl App for VendorApp {
                                     );
                                     v.reset_at =
                                         Some(OffsetDateTime::now_utc() + Duration::minutes(mins));
+                                    v.ready_refilled = false;
                                     self.dirty = true;
                                 }
 
@@ -536,12 +623,19 @@ impl App for VendorApp {
                                     );
                                     v.reset_at =
                                         Some(OffsetDateTime::now_utc() + Duration::minutes(mins));
+                                    v.ready_refilled = false;
                                     self.dirty = true;
                                 }
 
                                 if ui.button("Clear").clicked() {
                                     v.reset_at = None;
                                     self.dirty = true;
+                                }
+
+                                if ui.button("Refill money").clicked() {
+                                    if let Some(max) = v.max_money {
+                                        v.money = max;
+                                    }
                                 }
                             });
 
@@ -550,14 +644,20 @@ impl App for VendorApp {
                             // Favor (1..11)
                             ui.horizontal(|ui| {
                                 ui.label("Favor");
-                                let label = VendorApp::favor_label(v.favor_level);
-                                ui.label(format!("{} ({})", v.favor_level, label));
-
-                                let old = v.favor_level;
-                                ui.add(
-                                    egui::Slider::new(&mut v.favor_level, 1..=11).show_value(false),
+                                let text = format!(
+                                    "{} ({})",
+                                    v.favor_level,
+                                    VendorApp::favor_label(v.favor_level)
                                 );
-                                if v.favor_level != old {
+                                ui.add_sized([220.0, 0.0], egui::Label::new(text));
+
+                                if ui
+                                    .add(
+                                        egui::Slider::new(&mut v.favor_level, 1..=11)
+                                            .show_value(false),
+                                    )
+                                    .changed()
+                                {
                                     self.dirty = true;
                                 }
                             });
