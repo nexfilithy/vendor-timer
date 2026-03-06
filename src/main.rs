@@ -352,13 +352,14 @@ impl App for VendorApp {
 
                         // A very compact table-like list
                         egui::Grid::new("compact_overview_grid")
-                            .num_columns(3)
+                            .num_columns(4)
                             .spacing([12.0, 2.0])
                             .striped(true)
                             .show(ui, |ui| {
                                 ui.strong("Vendor");
                                 ui.strong("Current money");
                                 ui.strong("Remaining");
+                                ui.strong("");
                                 ui.end_row();
 
                                 let mut idxs: Vec<usize> =
@@ -407,7 +408,32 @@ impl App for VendorApp {
                                             ui.monospace(VendorApp::fmt_d_h_m_from_minutes(m));
                                         }
                                     }
+                                    let mins = VendorApp::effective_reset_minutes(
+                                        self.persisted.default_reset_minutes,
+                                        v,
+                                    );
 
+                                    // Only show Reset button when timer is ready (0) OR missing (—), adjust if you want
+                                    let show_reset = matches!(
+                                        VendorApp::remaining_minutes_clamped(v.reset_at),
+                                        Some(0) | None
+                                    );
+
+                                    if show_reset && ui.small_button("Reset").clicked() {
+                                        v.reset_at = Some(
+                                            OffsetDateTime::now_utc() + Duration::minutes(mins),
+                                        );
+                                        v.ready_refilled = false;
+
+                                        if let Some(max) = v.max_money {
+                                            v.money = max;
+                                        }
+
+                                        self.dirty = true;
+                                    } else {
+                                        // keep grid alignment when button not shown
+                                        ui.label("");
+                                    }
                                     ui.end_row();
                                 }
                             });
