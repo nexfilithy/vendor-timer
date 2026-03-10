@@ -319,7 +319,8 @@ impl VendorApp {
         }
 
         let p = self.persisted.player_log_path.trim();
-        if p.is_empty() || !std::path::Path::new(p).exists() {
+        let path = expand_user_path(p);
+        if p.is_empty() || !path.exists() {
             return;
         }
 
@@ -499,11 +500,29 @@ impl App for VendorApp {
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.persisted.player_log_path)
                         .desired_width(360.0)
-                        .hint_text("/path/to/Player.log"),
+                        .hint_text(default_player_log_hint()),
                 );
+
+                if ui.button("Browse…").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Player log", &["log", "txt"])
+                        .pick_file()
+                    {
+                        self.persisted.player_log_path = path.display().to_string();
+                        self.dirty = true;
+                        self.stop_watcher();
+                    }
+                }
+                if ui.button("Use default").clicked() {
+                    if let Some(p) = default_player_log_path() {
+                        self.persisted.player_log_path = p.display().to_string();
+                        self.dirty = true;
+                        self.stop_watcher();
+                    }
+                }
+
                 if resp.changed() {
                     self.dirty = true;
-                    // restart watcher if running
                     self.stop_watcher();
                 }
 
@@ -516,7 +535,8 @@ impl App for VendorApp {
                 }
 
                 let p = self.persisted.player_log_path.trim();
-                let missing = p.is_empty() || !std::path::Path::new(p).exists();
+                let path = expand_user_path(p);
+                let missing = p.is_empty() || !path.exists();
                 if missing {
                     ui.colored_label(egui::Color32::LIGHT_RED, "path missing");
                 }
@@ -1118,6 +1138,70 @@ fn parse_vendor_update_gold(line: &str) -> Option<LogEvent> {
         reset_at_ms,
         cap,
     })
+}
+fn expand_user_path(s: &str) -> PathBuf {
+    let s = s.trim();
+    if s.is_empty() {
+        return PathBuf::new();
+    }
+
+    // Expand "~" and "~/" on unix-ish systems (also nice on Windows if user types it)
+    if s == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+    }
+    if let Some(rest) = s.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+
+    // Convenience: ".config/..." => "$HOME/.config/..." (Unix only)
+    #[cfg(unix)]
+    {
+        if let Some(rest) = s.strip_prefix(".config/") {
+            if let Some(home) = dirs::home_dir() {
+                return home.join(".config").join(rest);
+            }
+        }
+    }
+
+    PathBuf::from(s)
+}
+
+fn default_player_log_path() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        // %USERPROFILE%\AppData\LocalLow\Elder Game\Project Gorgon\Player.log
+        let base = dirs::home_dir()?;
+        Some(
+            base.join("AppData")
+                .join("LocalLow")
+                .join("Elder Game")
+                .join("Project Gorgon")
+                .join("Player.log"),
+        )
+    }
+
+    #[cfg(unix)]
+    {
+        // ~/.config/unity3d/Elder Game/Project Gorgon/Player.log
+        let home = dirs::home_dir()?;
+        Some(
+            home.join(".config")
+                .join("unity3d")
+                .join("Elder Game")
+                .join("Project Gorgon")
+                .join("Player.log"),
+        )
+    }
+}
+
+fn default_player_log_hint() -> String {
+    default_player_log_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "Path to Player.log".to_string())
 }
 
 fn default_save_path() -> PathBuf {
