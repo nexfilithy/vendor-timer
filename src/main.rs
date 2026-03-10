@@ -1,7 +1,7 @@
 // src/main.rs
 use eframe::{App, Frame, NativeOptions, egui};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{collections::HashMap, fs, path::PathBuf};
 use time::{Duration, OffsetDateTime};
 
 fn main() -> eframe::Result<()> {
@@ -121,6 +121,9 @@ struct VendorApp {
     calc_hours: i64,
     calc_minutes: i64,
 
+    vendor_card_y: HashMap<usize, f32>,
+    scroll_to_vendor: Option<usize>,
+
     dirty: bool,
 }
 
@@ -152,6 +155,8 @@ impl VendorApp {
             calc_days: 0,
             calc_hours: 0,
             calc_minutes: 0,
+            vendor_card_y: HashMap::new(),
+            scroll_to_vendor: None,
             dirty: false,
         }
     }
@@ -383,7 +388,9 @@ impl App for VendorApp {
                                 for i in idxs {
                                     let v = &mut self.persisted.vendors[i];
 
-                                    ui.label(v.name.clone());
+                                    if ui.link(v.name.clone()).clicked() {
+                                        self.scroll_to_vendor = Some(i);
+                                    }
 
                                     // interactive current money
                                     if ui
@@ -506,6 +513,8 @@ impl App for VendorApp {
 
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let default_reset_minutes = self.persisted.default_reset_minutes;
+                self.vendor_card_y.clear();
+
                 for (i, v) in self.persisted.vendors.iter_mut().enumerate() {
                     // Auto-refill when the timer reaches 0 (do it once)
                     if let Some(reset_at) = v.reset_at {
@@ -518,6 +527,10 @@ impl App for VendorApp {
                             self.dirty = true;
                         }
                     }
+
+                    let y = ui.cursor().min.y;
+                    self.vendor_card_y.insert(i, y);
+
                     egui::Frame::group(ui.style())
                         .fill(ui.visuals().extreme_bg_color)
                         .show(ui, |ui| {
@@ -750,6 +763,19 @@ impl App for VendorApp {
                         });
 
                     ui.add_space(8.0);
+                }
+                if let Some(target) = self.scroll_to_vendor.take() {
+                    if let Some(&y) = self.vendor_card_y.get(&target) {
+                        // Create a 1px-tall rect at that y and ask egui to scroll it into view.
+                        let rect = egui::Rect::from_min_size(
+                            egui::pos2(ui.cursor().min.x, y),
+                            egui::vec2(1.0, 1.0),
+                        );
+                        ui.scroll_to_rect(rect, Some(egui::Align::TOP));
+                    } else {
+                        // If we don't know y yet (first frame), try again next frame:
+                        self.scroll_to_vendor = Some(target);
+                    }
                 }
             });
 
