@@ -46,6 +46,9 @@ fn persistence_path() -> PathBuf {
     let base = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join("vendor_timers").join("eframe_state.ron")
 }
+fn default_true() -> bool {
+    true
+}
 
 const RELATIONSHIP: [&str; 11] = [
     "Despised",
@@ -89,6 +92,8 @@ struct Vendor {
     draft_like: String,
     #[serde(skip)]
     max_money_buf: String,
+    #[serde(default = "default_true")]
+    show_in_compact: bool,
 }
 
 impl Default for Vendor {
@@ -107,6 +112,7 @@ impl Default for Vendor {
             draft_buy: String::new(),
             draft_like: String::new(),
             max_money_buf: String::new(),
+            show_in_compact: true,
         }
     }
 }
@@ -596,8 +602,13 @@ impl App for VendorApp {
                                 ui.strong("");
                                 ui.end_row();
 
-                                let mut idxs: Vec<usize> =
-                                    (0..self.persisted.vendors.len()).collect();
+                                let mut idxs: Vec<usize> = self
+                                    .persisted
+                                    .vendors
+                                    .iter()
+                                    .enumerate()
+                                    .filter_map(|(i, v)| v.show_in_compact.then_some(i))
+                                    .collect();
                                 idxs.sort_by(|&ia, &ib| {
                                     let a = &self.persisted.vendors[ia];
                                     let b = &self.persisted.vendors[ib];
@@ -904,6 +915,13 @@ impl App for VendorApp {
                                     if let Some(max) = v.max_money {
                                         v.money = max;
                                     }
+                                }
+                                ui.separator();
+                                if ui
+                                    .checkbox(&mut v.show_in_compact, "Compact view")
+                                    .changed()
+                                {
+                                    self.dirty = true;
                                 }
                             });
 
