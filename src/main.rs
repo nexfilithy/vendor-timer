@@ -50,6 +50,47 @@ fn default_true() -> bool {
     true
 }
 
+fn parse_login_character(line: &str) -> Option<String> {
+    // Example:
+    // [21:18:52] Logged in as character Nexeh. Time UTC=...
+    let needle = "Logged in as character ";
+    let idx = line.find(needle)?;
+    let rest = &line[idx + needle.len()..];
+
+    let end = rest.find('.').unwrap_or(rest.len());
+    let name = rest[..end].trim();
+
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+fn find_last_logged_in_character(path: &PathBuf) -> Option<String> {
+    use std::fs::File;
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut f = File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+
+    // Read last up to 8 MB
+    let read_bytes: u64 = 8 * 1024 * 1024;
+    let start = len.saturating_sub(read_bytes);
+    f.seek(SeekFrom::Start(start)).ok()?;
+
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+
+    for line in text.lines().rev() {
+        if let Some(name) = parse_login_character(line) {
+            return Some(name);
+        }
+    }
+    None
+}
+
 const RELATIONSHIP: [&str; 11] = [
     "Despised",
     "Hated",
@@ -84,6 +125,8 @@ struct Vendor {
     reset_period_minutes: Option<i64>,
     #[serde(default)]
     ready_refilled: bool,
+    #[serde(default)]
+    character_name: String,
 
     // UI-only drafts (not persisted)
     #[serde(skip)]
@@ -109,6 +152,7 @@ impl Default for Vendor {
             reset_at: None,
             reset_period_minutes: None,
             ready_refilled: false,
+            character_name: String::new(),
             draft_buy: String::new(),
             draft_like: String::new(),
             max_money_buf: String::new(),
@@ -132,6 +176,9 @@ enum LogEvent {
         reset_at_ms: i64,
         cap: i64,
     },
+    LoginCharacter {
+        name: String,
+    },
 }
 
 struct WatcherHandle {
@@ -147,6 +194,8 @@ struct Persisted {
     #[serde(default)]
     watch_player_log: bool,
     vendors: Vec<Vendor>,
+    #[serde(default)]
+    character_name: String,
 }
 
 struct VendorApp {
@@ -183,6 +232,7 @@ impl VendorApp {
             player_log_path: String::new(),
             watch_player_log: false,
             vendors: vec![],
+            character_name: String::new(),
         });
         if persisted.default_reset_minutes <= 0 {
             persisted.default_reset_minutes = 7 * 24 * 60;
@@ -330,7 +380,28 @@ impl VendorApp {
             return;
         }
 
-        let path = PathBuf::from(p);
+        if self.persisted.character_name.trim().is_empty() {
+            if let Some(name) = find_last_logged_in_character(&path) {
+                self.persisted.character_name = name;
+                self.dirty = true;
+            }
+        }
+
+        let cur = self.persisted.character_name.trim();
+        if !cur.is_empty() {
+            let mut changed = false;
+            for v in &mut self.persisted.vendors {
+                if v.character_name.trim().is_empty() {
+                    v.character_name = cur.to_string();
+                    changed = true;
+                }
+            }
+            if changed {
+                self.dirty = true;
+            }
+        }
+
+        //let path = PathBuf::from(p);
         let stop = Arc::new(AtomicBool::new(false));
         let stop2 = stop.clone();
         let tx = self.log_tx.clone();
@@ -412,15 +483,23 @@ impl VendorApp {
                     }
                 });
             }
+            LogEvent::LoginCharacter { name } => {
+                let name = name.trim().to_string();
+                if !name.is_empty() && self.persisted.character_name != name {
+                    self.persisted.character_name = name;
+                    self.dirty = true;
+                }
+            }
         }
     }
 
     fn upsert_vendor_by_key(&mut self, npc_key: &str, f: impl FnOnce(&mut Vendor)) {
+        let cur = self.persisted.character_name.trim();
         let found = self
             .persisted
             .vendors
             .iter_mut()
-            .find(|v| v.npc_key.as_deref() == Some(npc_key));
+            .find(|v| v.npc_key.as_deref() == Some(npc_key) && v.character_name.trim() == cur);
 
         if let Some(v) = found {
             f(v);
@@ -432,6 +511,7 @@ impl VendorApp {
         let mut v = Vendor::default();
         v.npc_key = Some(npc_key.to_string());
         v.name = Self::strip_npc_prefix(npc_key);
+        v.character_name = self.persisted.character_name.trim().to_string();
         f(&mut v);
         self.persisted.vendors.push(v);
         self.dirty = true;
@@ -590,6 +670,8 @@ impl App for VendorApp {
                             (None, None) => a.0.cmp(&b.0),
                         });
 
+                        let cur = self.persisted.character_name.trim();
+
                         // A very compact table-like list
                         egui::Grid::new("compact_overview_grid")
                             .num_columns(4)
@@ -607,7 +689,10 @@ impl App for VendorApp {
                                     .vendors
                                     .iter()
                                     .enumerate()
-                                    .filter_map(|(i, v)| v.show_in_compact.then_some(i))
+                                    .filter_map(|(i, v)| {
+                                        (v.show_in_compact && v.character_name.trim() == cur)
+                                            .then_some(i)
+                                    })
                                     .collect();
                                 idxs.sort_by(|&ia, &ib| {
                                     let a = &self.persisted.vendors[ia];
@@ -754,8 +839,11 @@ impl App for VendorApp {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let default_reset_minutes = self.persisted.default_reset_minutes;
                 self.vendor_card_y.clear();
-
+                let cur = self.persisted.character_name.trim();
                 for (i, v) in self.persisted.vendors.iter_mut().enumerate() {
+                    if v.character_name.trim() != cur {
+                        continue;
+                    }
                     // Auto-refill when the timer reaches 0 (do it once)
                     if let Some(reset_at) = v.reset_at {
                         let now = OffsetDateTime::now_utc();
@@ -1084,6 +1172,9 @@ fn tail_player_log(path: PathBuf, stop: Arc<AtomicBool>, tx: mpsc::Sender<LogEve
 
         let text = String::from_utf8_lossy(&buf);
         for line in text.lines() {
+            if let Some(name) = parse_login_character(line) {
+                let _ = tx.send(LogEvent::LoginCharacter { name });
+            }
             if let Some(ev) = parse_log_line(line) {
                 let _ = tx.send(ev);
             }
